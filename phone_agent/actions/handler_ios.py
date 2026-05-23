@@ -79,6 +79,12 @@ class IOSActionHandler:
             )
 
         action_name = action.get("action")
+        if not isinstance(action_name, str):
+            return ActionResult(
+                success=False,
+                should_finish=False,
+                message=f"Invalid action name: {action_name}",
+            )
         handler_method = self._get_handler(action_name)
 
         if handler_method is None:
@@ -249,7 +255,7 @@ class IOSActionHandler:
         """Handle takeover request (login, captcha, etc.)."""
         message = action.get("message", "User intervention required")
         self.takeover_callback(message)
-        return ActionResult(True, False)
+        return ActionResult(True, True, message=message)
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle note action (placeholder for content recording)."""
@@ -276,5 +282,5 @@ class IOSActionHandler:
 
     @staticmethod
     def _default_takeover(message: str) -> None:
-        """Default takeover callback using console input."""
-        input(f"{message}\nPress Enter after completing manual operation...")
+        """Default takeover callback: non-blocking notification."""
+        print(f"Manual step required: {message}")

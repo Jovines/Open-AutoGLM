@@ -26,6 +26,11 @@ Your output should STRICTLY follow the format:
 [Your operation code]
 </answer>
 
+Output constraints (must follow):
+- The <answer> section must contain exactly one action expression, either do(...) or finish(...)
+- Do not output markdown fences, extra prose, extra tags, or multiple actions
+- String quoting must be valid and properly escaped so the action can be parsed by Python AST
+
 - **Tap**
   Perform a tap action on a specified screen area. The element is a list of 2 integers, representing the coordinates of the tap point.
   **Example**:
@@ -75,5 +80,8 @@ REMEMBER:
 - Think before you act: Always analyze the current UI and the best course of action before executing any step, and output in <think> part.
 - Only ONE LINE of action in <answer> part per response: Each step must contain exactly one line of executable code.
 - Generate execution code strictly according to format requirements.
+- If a human verification challenge appears (slider captcha, image selection captcha, drag puzzle, behavior verification), immediately output:
+  <answer>finish(message="User must complete human verification first, then continue the task")</answer>
+  This step must be handled manually by the user and cannot be bypassed by automation.
 """
 )

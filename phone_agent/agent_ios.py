@@ -24,6 +24,7 @@ class IOSAgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    max_consecutive_screenshot_failures: int = 1
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -98,6 +99,7 @@ class IOSPhoneAgent:
 
         self._context: list[dict[str, Any]] = []
         self._step_count = 0
+        self._consecutive_screenshot_failures = 0
 
     def run(self, task: str) -> str:
         """
@@ -111,6 +113,7 @@ class IOSPhoneAgent:
         """
         self._context = []
         self._step_count = 0
+        self._consecutive_screenshot_failures = 0
 
         # First step with user prompt
         result = self._execute_step(task, is_first=True)
@@ -167,10 +170,33 @@ class IOSPhoneAgent:
             wda_url=self.agent_config.wda_url, session_id=self.agent_config.session_id
         )
 
+        if getattr(screenshot, "is_fallback", False):
+            self._consecutive_screenshot_failures += 1
+        else:
+            self._consecutive_screenshot_failures = 0
+
+        if (
+            self._consecutive_screenshot_failures
+            >= self.agent_config.max_consecutive_screenshot_failures
+        ):
+            message = (
+                "Screenshot is unavailable (likely a secure page such as login/verification). "
+                "Please complete this sensitive step manually, then continue."
+            )
+            if self.agent_config.verbose:
+                print(message)
+            return StepResult(
+                success=False,
+                finished=True,
+                action=finish(message=message),
+                thinking="",
+                message=message,
+            )
+
         # Build messages
         if is_first:
             self._context.append(
-                MessageBuilder.create_system_message(self.agent_config.system_prompt)
+                MessageBuilder.create_system_message(self.agent_config.system_prompt or "")
             )
 
             screen_info = MessageBuilder.build_screen_info(current_app)

@@ -380,6 +380,9 @@ Examples:
     # Enable TCP/IP on USB device and get connection info
     python main.py --enable-tcpip
 
+    # Auto-confirm sensitive clicks (no prompt)
+    python main.py -y "Open shopping app and place order"
+
     # List supported apps
     python main.py --list-apps
 
@@ -492,6 +495,13 @@ Examples:
     # Other options
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Suppress verbose output"
+    )
+
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Auto-confirm sensitive actions without prompting",
     )
 
     parser.add_argument(
@@ -752,6 +762,12 @@ def main():
         lang=args.lang,
     )
 
+    if args.yes:
+        def auto_confirm_sensitive(_message: str) -> bool:
+            return True
+    else:
+        auto_confirm_sensitive = None
+
     if device_type == DeviceType.IOS:
         # Create iOS agent
         agent_config = IOSAgentConfig(
@@ -765,6 +781,7 @@ def main():
         agent = IOSPhoneAgent(
             model_config=model_config,
             agent_config=agent_config,
+            confirmation_callback=auto_confirm_sensitive,
         )
     else:
         # Create Android/HarmonyOS agent
@@ -778,6 +795,7 @@ def main():
         agent = PhoneAgent(
             model_config=model_config,
             agent_config=agent_config,
+            confirmation_callback=auto_confirm_sensitive,
         )
 
     # Print header
@@ -792,6 +810,7 @@ def main():
     print(f"Max Steps: {agent_config.max_steps}")
     print(f"Language: {agent_config.lang}")
     print(f"Device Type: {args.device_type.upper()}")
+    print(f"Auto confirm sensitive actions: {'ON' if args.yes else 'OFF'}")
 
     # Show iOS-specific config
     if device_type == DeviceType.IOS:

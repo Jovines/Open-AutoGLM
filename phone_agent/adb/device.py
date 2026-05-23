@@ -1,12 +1,17 @@
 """Device control utilities for Android automation."""
 
+import json
 import os
+import re
 import subprocess
 import time
 from typing import List, Optional, Tuple
 
 from phone_agent.config.apps import APP_PACKAGES
 from phone_agent.config.timing import TIMING_CONFIG
+
+_APP_CACHE_TTL_SECONDS = 60
+_dynamic_apps_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 
 
 def get_current_app(device_id: str | None = None) -> str:
@@ -222,13 +227,12 @@ def launch_app(
     if delay is None:
         delay = TIMING_CONFIG.device.default_launch_delay
 
-    if app_name not in APP_PACKAGES:
+    adb_prefix = _get_adb_prefix(device_id)
+    package = _resolve_package_name(app_name, device_id)
+    if not package:
         return False
 
-    adb_prefix = _get_adb_prefix(device_id)
-    package = APP_PACKAGES[app_name]
-
-    subprocess.run(
+    result = subprocess.run(
         adb_prefix
         + [
             "shell",
@@ -240,9 +244,143 @@ def launch_app(
             "1",
         ],
         capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        return False
+
     time.sleep(delay)
-    return True
+
+    if _is_package_focused(package, device_id):
+        return True
+
+    for _ in range(4):
+        time.sleep(0.5)
+        if _is_package_focused(package, device_id):
+            return True
+
+    return False
+
+
+def _resolve_package_name(app_name: str, device_id: str | None = None) -> str | None:
+    """Resolve user-facing app name to package name."""
+    if app_name in APP_PACKAGES:
+        return APP_PACKAGES[app_name]
+
+    normalized = _normalize_app_name(app_name)
+
+    for known_name, package in APP_PACKAGES.items():
+        if _normalize_app_name(known_name) == normalized:
+            return package
+
+    dynamic_apps = _get_dynamic_app_mappings(device_id)
+    if not dynamic_apps:
+        return None
+
+    for app in dynamic_apps:
+        label = app.get("label", "")
+        if _normalize_app_name(label) == normalized:
+            return app.get("package")
+
+    for app in dynamic_apps:
+        label = app.get("label", "")
+        package = app.get("package", "")
+        if normalized and normalized in _normalize_app_name(label):
+            return package
+
+    for app in dynamic_apps:
+        package = app.get("package", "")
+        if normalized and normalized in _normalize_app_name(package):
+            return package
+
+    return None
+
+
+def _normalize_app_name(name: str) -> str:
+    """Normalize app names for flexible matching."""
+    return re.sub(r"\s+", "", (name or "")).strip().lower()
+
+
+def _get_dynamic_app_mappings(device_id: str | None = None) -> list[dict[str, str]]:
+    """Get dynamic app mapping from ADBKeyboard receiver."""
+    cache_key = device_id or "default"
+    cached = _dynamic_apps_cache.get(cache_key)
+    now = time.time()
+    if cached and now - cached[0] < _APP_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    adb_prefix = _get_adb_prefix(device_id)
+    result = subprocess.run(
+        adb_prefix
+        + [
+            "shell",
+            "am",
+            "broadcast",
+            "-n",
+            "com.android.adbkeyboard/.AppListReceiver",
+            "-a",
+            "ADB_LIST_APPS",
+            "--ez",
+            "include_system",
+            "false",
+            "--ei",
+            "limit",
+            "300",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    apps = _parse_apps_json_from_broadcast(result.stdout)
+    _dynamic_apps_cache[cache_key] = (now, apps)
+    return apps
+
+
+def _parse_apps_json_from_broadcast(output: str) -> list[dict[str, str]]:
+    """Extract JSON payload from am broadcast output."""
+    if not output:
+        return []
+
+    match = re.search(r'data="(\[.*\])"', output, re.DOTALL)
+    if not match:
+        return []
+
+    payload = match.group(1)
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        package = item.get("package")
+        label = item.get("label")
+        if isinstance(package, str) and isinstance(label, str):
+            normalized.append(
+                {
+                    "label": label,
+                    "package": package,
+                    "activity": str(item.get("activity", "")),
+                }
+            )
+    return normalized
+
+
+def _is_package_focused(package: str, device_id: str | None = None) -> bool:
+    """Check if target package is currently focused."""
+    adb_prefix = _get_adb_prefix(device_id)
+    result = subprocess.run(
+        adb_prefix + ["shell", "dumpsys", "activity", "activities"],
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout or ""
+    return package in output
 
 
 def _get_adb_prefix(device_id: str | None) -> list:

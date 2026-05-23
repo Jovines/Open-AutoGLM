@@ -21,6 +21,7 @@ class Screenshot:
     width: int
     height: int
     is_sensitive: bool = False
+    is_fallback: bool = False
 
 
 def get_screenshot(device_id: str | None = None, timeout: int = 10) -> Screenshot:
@@ -93,7 +94,11 @@ def get_screenshot(device_id: str | None = None, timeout: int = 10) -> Screensho
         os.remove(temp_path)
 
         return Screenshot(
-            base64_data=base64_data, width=width, height=height, is_sensitive=False
+            base64_data=base64_data,
+            width=width,
+            height=height,
+            is_sensitive=False,
+            is_fallback=False,
         )
 
     except Exception as e:
@@ -122,4 +127,5 @@ def _create_fallback_screenshot(is_sensitive: bool) -> Screenshot:
         width=default_width,
         height=default_height,
         is_sensitive=is_sensitive,
+        is_fallback=True,
     )

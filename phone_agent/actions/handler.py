@@ -71,6 +71,12 @@ class ActionHandler:
             )
 
         action_name = action.get("action")
+        if not isinstance(action_name, str):
+            return ActionResult(
+                success=False,
+                should_finish=False,
+                message=f"Invalid action name: {action_name}",
+            )
         handler_method = self._get_handler(action_name)
 
         if handler_method is None:
@@ -236,7 +242,7 @@ class ActionHandler:
         """Handle takeover request (login, captcha, etc.)."""
         message = action.get("message", "User intervention required")
         self.takeover_callback(message)
-        return ActionResult(True, False)
+        return ActionResult(True, True, message=message)
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle note action (placeholder for content recording)."""
@@ -325,8 +331,36 @@ class ActionHandler:
 
     @staticmethod
     def _default_takeover(message: str) -> None:
-        """Default takeover callback using console input."""
-        input(f"{message}\nPress Enter after completing manual operation...")
+        """Default takeover callback: non-blocking notification."""
+        print(f"Manual step required: {message}")
+
+
+def _normalize_action_response(response: str) -> str:
+    """Normalize model output wrappers without changing action semantics."""
+    text = response.strip()
+    text = text.replace("```python", "").replace("```", "").strip()
+    text = re.sub(r"</?answer>", "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _parse_call_kwargs_ast(response: str, call_name: str) -> dict[str, Any]:
+    """Strictly parse do(...) / finish(...) using AST."""
+    tree = ast.parse(response, mode="eval")
+    if not isinstance(tree.body, ast.Call):
+        raise ValueError("Expected a function call")
+
+    call = tree.body
+    if not isinstance(call.func, ast.Name) or call.func.id != call_name:
+        raise ValueError(f"Expected {call_name}(...) call")
+
+    kwargs: dict[str, Any] = {}
+    for keyword in call.keywords:
+        key = keyword.arg
+        if key is None:
+            continue
+        kwargs[key] = ast.literal_eval(keyword.value)
+
+    return kwargs
 
 
 def parse_action(response: str) -> dict[str, Any]:
@@ -344,41 +378,21 @@ def parse_action(response: str) -> dict[str, Any]:
     """
     print(f"Parsing action: {response}")
     try:
-        response = response.strip()
-        if response.startswith('do(action="Type"') or response.startswith(
-            'do(action="Type_Name"'
-        ):
-            text = response.split("text=", 1)[1][1:-2]
-            action = {"_metadata": "do", "action": "Type", "text": text}
+        response = _normalize_action_response(response)
+
+        if response.startswith("do"):
+            escaped_response = response.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            kwargs = _parse_call_kwargs_ast(escaped_response, "do")
+            action = {"_metadata": "do"}
+            action.update(kwargs)
             return action
-        elif response.startswith("do"):
-            # Use AST parsing instead of eval for safety
-            try:
-                # Escape special characters (newlines, tabs, etc.) for valid Python syntax
-                response = response.replace('\n', '\\n')
-                response = response.replace('\r', '\\r')
-                response = response.replace('\t', '\\t')
 
-                tree = ast.parse(response, mode="eval")
-                if not isinstance(tree.body, ast.Call):
-                    raise ValueError("Expected a function call")
-
-                call = tree.body
-                # Extract keyword arguments safely
-                action = {"_metadata": "do"}
-                for keyword in call.keywords:
-                    key = keyword.arg
-                    value = ast.literal_eval(keyword.value)
-                    action[key] = value
-
-                return action
-            except (SyntaxError, ValueError) as e:
-                raise ValueError(f"Failed to parse do() action: {e}")
-
-        elif response.startswith("finish"):
+        if response.startswith("finish"):
+            escaped_response = response.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            kwargs = _parse_call_kwargs_ast(escaped_response, "finish")
             action = {
                 "_metadata": "finish",
-                "message": response.replace("finish(message=", "")[1:-2],
+                "message": str(kwargs.get("message", "")),
             }
         else:
             raise ValueError(f"Failed to parse action: {response}")

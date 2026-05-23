@@ -2,6 +2,7 @@
 
 import json
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,6 +51,29 @@ class ModelClient:
         self.config = config or ModelConfig()
         self.client = OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
+    def _build_extra_body(self) -> dict[str, Any]:
+        """Build provider-specific extra request body."""
+        extra_body = dict(self.config.extra_body)
+
+        parsed = urlparse(self.config.base_url)
+        host = (parsed.hostname or "").lower()
+        is_local_ollama = host in {"127.0.0.1", "localhost"} and parsed.port == 11434
+
+        if is_local_ollama and "think" not in extra_body:
+            extra_body["think"] = True
+
+        return extra_body
+
+    @staticmethod
+    def _clean_thinking_text(text: str) -> str:
+        """Remove wrapper tags from streamed thinking text."""
+        return (
+            text.replace("<think>", "")
+            .replace("</think>", "")
+            .replace("<answer>", "")
+            .replace("</answer>", "")
+        )
+
     def request(self, messages: list[dict[str, Any]]) -> ModelResponse:
         """
         Send a request to the model.
@@ -75,21 +99,35 @@ class ModelClient:
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             frequency_penalty=self.config.frequency_penalty,
-            extra_body=self.config.extra_body,
+            extra_body=self._build_extra_body(),
             stream=True,
         )
 
         raw_content = ""
+        raw_reasoning = ""
         buffer = ""  # Buffer to hold content that might be part of a marker
         action_markers = ["finish(message=", "do(action="]
         in_action_phase = False  # Track if we've entered the action phase
         first_token_received = False
+        displayed_thinking = False
 
         for chunk in stream:
             if len(chunk.choices) == 0:
                 continue
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
+
+            delta = chunk.choices[0].delta
+
+            reasoning_chunk = getattr(delta, "reasoning", None)
+            if reasoning_chunk is not None:
+                reasoning_text = str(reasoning_chunk)
+                raw_reasoning += reasoning_text
+
+                if not first_token_received:
+                    time_to_first_token = time.time() - start_time
+                    first_token_received = True
+
+            if delta.content is not None:
+                content = delta.content
                 raw_content += content
 
                 # Record time to first token
@@ -108,8 +146,12 @@ class ModelClient:
                 for marker in action_markers:
                     if marker in buffer:
                         # Marker found, print everything before it
-                        thinking_part = buffer.split(marker, 1)[0]
-                        print(thinking_part, end="", flush=True)
+                        thinking_part = self._clean_thinking_text(
+                            buffer.split(marker, 1)[0]
+                        )
+                        if thinking_part:
+                            print(thinking_part, end="", flush=True)
+                            displayed_thinking = True
                         print()  # Print newline after thinking is complete
                         in_action_phase = True
                         marker_found = True
@@ -123,27 +165,26 @@ class ModelClient:
                 if marker_found:
                     continue  # Continue to collect remaining content
 
-                # Check if buffer ends with a prefix of any marker
-                # If so, don't print yet (wait for more content)
-                is_potential_marker = False
-                for marker in action_markers:
-                    for i in range(1, len(marker)):
-                        if buffer.endswith(marker[:i]):
-                            is_potential_marker = True
-                            break
-                    if is_potential_marker:
-                        break
-
-                if not is_potential_marker:
-                    # Safe to print the buffer
-                    print(buffer, end="", flush=True)
-                    buffer = ""
-
-        # Calculate total time
         total_time = time.time() - start_time
+        if time_to_thinking_end is None and raw_reasoning.strip():
+            time_to_thinking_end = total_time
+
+        if not in_action_phase and buffer.strip():
+            cleaned_buffer = self._clean_thinking_text(buffer).strip()
+            if cleaned_buffer:
+                print(cleaned_buffer, end="", flush=True)
+                print()
+                displayed_thinking = True
+
+        if not displayed_thinking and raw_reasoning.strip():
+            print(self._clean_thinking_text(raw_reasoning).strip(), end="", flush=True)
+            print()
+
 
         # Parse thinking and action from response
         thinking, action = self._parse_response(raw_content)
+        if raw_reasoning.strip():
+            thinking = self._clean_thinking_text(raw_reasoning).strip()
 
         # Print performance metrics
         lang = self.config.lang
